@@ -1,3 +1,115 @@
+# Market Analyst
+
+Market Analyst is a local market-analysis dashboard built on top of the original
+[Kronos](https://github.com/shiyu-coder/Kronos) project. It uses Kronos forecasts
+as a decision-support layer for NVDA and Mag 7 watchlist review across multiple
+time horizons.
+
+This fork adds:
+
+- Public Yahoo chart-data ingestion for `NVDA`, `AAPL`, `MSFT`, `AMZN`, `GOOGL`,
+  `META`, and `TSLA`.
+- Local CSV datasets for `5m`, `1h`, and `1d` candles.
+- A daily refresh script and macOS `launchd` template.
+- A Flask dashboard with clearer forecast-vs-actual charting.
+- US Eastern chart timestamps for US equities.
+- A conservative entry/exit zone overlay based on forecast range, ATR, and
+  prediction error where comparison data exists.
+
+Important: this is not an automated trading system and does not connect to a
+brokerage account. Forecasts and entry/exit zones are for review only, not
+financial advice or automatic buy/sell instructions.
+
+## Quick Start
+
+Install dependencies:
+
+```shell
+python3 -m venv .venv
+.venv/bin/python -m pip install numpy pandas torch einops==0.8.1 huggingface_hub==0.33.1 tqdm==4.67.1 safetensors==0.6.2 flask flask-cors plotly
+```
+
+Refresh public market data:
+
+```shell
+scripts/refresh_daily_data.sh
+```
+
+Start the dashboard:
+
+```shell
+.venv/bin/python webui/app.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:7070
+```
+
+Suggested workflow:
+
+1. Load a dataset such as `NVDA_1d.csv`, `NVDA_1h.csv`, or `NVDA_5m.csv`.
+2. Load `Kronos-mini` on `cpu` for fast local testing.
+3. Run a prediction.
+4. Compare the blue dashed predicted close line with the orange actual close
+   line when using historical comparison windows.
+5. Treat the entry/exit overlay as zones for review, not trade orders.
+
+## Data Horizons
+
+The refresh script maintains three horizons for each watchlist ticker:
+
+| File suffix | Yahoo interval | Range | Intended use |
+| --- | --- | --- | --- |
+| `_5m.csv` | `5m` | `1mo` | Intraday texture |
+| `_1h.csv` | `1h` | `1y` | Intermediate trend |
+| `_1d.csv` | `1d` | `5y` | Swing / broader trend |
+
+The dashboard auto-selects approximate prediction windows by interval:
+
+| Interval | Lookback | Prediction length |
+| --- | ---: | ---: |
+| `5m` | 400 | 120 |
+| `1h` | 240 | 80 |
+| `1d` | 252 | 63 |
+
+## Daily Refresh
+
+Manual refresh:
+
+```shell
+scripts/refresh_daily_data.sh
+```
+
+Optional macOS schedule:
+
+```shell
+cp scripts/com.kronos.daily-data-refresh.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.kronos.daily-data-refresh.plist
+```
+
+The included schedule is Tuesday-Saturday at 5:30 AM Singapore time, after the
+prior US trading session has closed.
+
+## Original Project Credit
+
+This repository is a fork/customization of:
+
+```text
+https://github.com/shiyu-coder/Kronos
+```
+
+The underlying model architecture, pretrained model integration, examples,
+fine-tuning code, and much of the original documentation come from Kronos:
+**"A Foundation Model for the Language of Financial Markets"** by Yu Shi,
+Zongliang Fu, Shuo Chen, Bohan Zhao, Wei Xu, Changshui Zhang, and Jian Li.
+
+Please cite the original Kronos paper if you use this work in research. The
+upstream citation is preserved near the bottom of this README.
+
+---
+
 <div align="center">
   <h2><b>Kronos: A Foundation Model for the Language of Financial Markets </b></h2>
 </div>
