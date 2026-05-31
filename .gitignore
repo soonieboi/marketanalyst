@@ -58,6 +58,7 @@ Desktop.ini
 # Logs
 *.log
 logs/
+webui/prediction_results/prediction_*.json
 
 # Environment
 .env
