@@ -513,7 +513,7 @@
                     <div class="time-window-info">
                         <span id="window-start">Start: --</span>
                         <span id="window-end">End: --</span>
-                        <span id="window-size">Window Size: 400+120=520 data points</span>
+                        <span id="window-size">Window Size: --</span>
                     </div>
                     
                     <div class="time-window-slider">
@@ -528,20 +528,20 @@
                         </div>
                     </div>
                     
-                    <small class="form-text">Drag slider to select time window position for 520 data points, green area represents fixed 400+120 data point range</small>
+                    <small class="form-text">Drag slider to select a historical comparison window. Window size adjusts to the selected interval.</small>
                 </div>
 
                 <!-- Prediction Parameters -->
                 <div class="form-group">
                     <label for="lookback">Lookback Window Size:</label>
                     <input type="number" id="lookback" value="400" readonly>
-                    <small class="form-text">Fixed at 400 data points</small>
+                    <small class="form-text">Auto-selected from the data interval</small>
                 </div>
 
                 <div class="form-group">
                     <label for="pred-len">Prediction Length:</label>
                     <input type="number" id="pred-len" value="120" readonly>
-                    <small class="form-text">Fixed at 120 data points</small>
+                    <small class="form-text">Auto-selected from the data interval</small>
                 </div>
 
                 <!-- Prediction Quality Parameters -->
@@ -639,6 +639,7 @@
         let currentDataInfo = null;
         let availableModels = [];
         let modelLoaded = false;
+        let intervalSettings = { lookback: 400, predLen: 120, label: '5-minute' };
 
         // Initialize after page loads
         document.addEventListener('DOMContentLoaded', function() {
@@ -828,6 +829,16 @@
             initializeTimeWindowSlider(dataInfo);
         }
 
+        function getIntervalSettings(filePath) {
+            if (filePath.includes('_1d.')) {
+                return { lookback: 252, predLen: 63, label: '1-day' };
+            }
+            if (filePath.includes('_1h.')) {
+                return { lookback: 240, predLen: 80, label: '1-hour' };
+            }
+            return { lookback: 400, predLen: 120, label: '5-minute' };
+        }
+
                     // Time window slider related variables
         let sliderData = null;
         let isDragging = false;
@@ -908,8 +919,7 @@
             const startHandle = document.getElementById('start-handle');
             const selection = document.getElementById('slider-selection');
             
-            // Fixed window size of 520 data points
-            const windowSize = 520;
+            const windowSize = intervalSettings.lookback + intervalSettings.predLen;
             const totalRows = sliderData ? sliderData.totalRows : 1000;
             const windowPercentage = windowSize / totalRows;
             
@@ -932,8 +942,7 @@
             const endHandle = document.getElementById('end-handle');
             const selection = document.getElementById('slider-selection');
             
-            // Fixed window size of 520 data points
-            const windowSize = 520;
+            const windowSize = intervalSettings.lookback + intervalSettings.predLen;
             const totalRows = sliderData ? sliderData.totalRows : 1000;
             const windowPercentage = windowSize / totalRows;
             
@@ -973,22 +982,19 @@
             document.getElementById('window-start').textContent = `Start: ${startDate.toLocaleDateString()}`;
             document.getElementById('window-end').textContent = `End: ${endDate.toLocaleDateString()}`;
             
-            // Display fixed window size
-            document.getElementById('window-size').textContent = `Window Size: 400 + 120 = 520 data points (fixed)`;
+            document.getElementById('window-size').textContent = `Window Size: ${intervalSettings.lookback} + ${intervalSettings.predLen} = ${intervalSettings.lookback + intervalSettings.predLen} ${intervalSettings.label} candles`;
             
-            // Input field values remain fixed
-            document.getElementById('lookback').value = 400;
-            document.getElementById('pred-len').value = 120;
+            document.getElementById('lookback').value = intervalSettings.lookback;
+            document.getElementById('pred-len').value = intervalSettings.predLen;
         }
 
         // Update slider based on input fields
         function updateSliderFromInputs() {
             if (!sliderData) return;
             
-            // Fixed window size: 400 + 120 = 520 data points
-            const lookback = 400;
-            const predLen = 120;
-            const windowSize = lookback + predLen; // Fixed at 520
+            const lookback = intervalSettings.lookback;
+            const predLen = intervalSettings.predLen;
+            const windowSize = lookback + predLen;
             
             // Calculate slider position
             const totalRows = sliderData.totalRows;
@@ -1019,6 +1025,7 @@
                 totalRows: dataInfo.rows,
                 timeframe: dataInfo.timeframe
             };
+            intervalSettings = getIntervalSettings(currentDataFile || '');
             
             // Set slider labels
             document.getElementById('min-label').textContent = dataInfo.start_date.split('T')[0];
