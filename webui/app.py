@@ -9,6 +9,7 @@ from flask_cors import CORS
 import sys
 import warnings
 import datetime
+from zoneinfo import ZoneInfo
 warnings.filterwarnings('ignore')
 
 # Add project root directory to path
@@ -122,6 +123,60 @@ def load_data_file(file_path):
     except Exception as e:
         return None, f"Failed to load file: {str(e)}"
 
+def make_us_market_timestamps(last_timestamp, periods, time_diff):
+    """Generate future regular-session US equity timestamps."""
+    eastern = ZoneInfo("America/New_York")
+    start_time = datetime.time(9, 30)
+    end_time = datetime.time(16, 0)
+    step = pd.Timedelta(time_diff)
+
+    current = pd.Timestamp(last_timestamp)
+    if current.tzinfo is None:
+        current = current.tz_localize("UTC")
+    current = current.tz_convert(eastern)
+
+    timestamps = []
+    candidate = current + step
+    while len(timestamps) < periods:
+        session_start = candidate.replace(hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0)
+        session_end = candidate.replace(hour=end_time.hour, minute=end_time.minute, second=0, microsecond=0)
+
+        if candidate.weekday() >= 5:
+            days_ahead = 7 - candidate.weekday()
+            candidate = (candidate + pd.Timedelta(days=days_ahead)).replace(
+                hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0
+            )
+            continue
+
+        if candidate < session_start:
+            candidate = session_start
+            continue
+
+        if candidate > session_end:
+            candidate = (candidate + pd.Timedelta(days=1)).replace(
+                hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0
+            )
+            continue
+
+        timestamps.append(candidate.tz_convert("UTC"))
+        candidate = candidate + step
+
+    return pd.Series(pd.DatetimeIndex(timestamps), name='timestamps')
+
+def normalize_start_datetime(start_date, timestamp_series):
+    """Match browser-provided start_date timezone to the loaded data."""
+    start_dt = pd.Timestamp(start_date)
+    data_tz = getattr(timestamp_series.dt, "tz", None)
+
+    if data_tz is not None:
+        if start_dt.tzinfo is None:
+            return start_dt.tz_localize(data_tz)
+        return start_dt.tz_convert(data_tz)
+
+    if start_dt.tzinfo is not None:
+        return start_dt.tz_convert("UTC").tz_localize(None)
+    return start_dt
+
 def save_prediction_results(file_path, prediction_type, prediction_results, actual_data, input_data, prediction_params):
     """Save prediction results to file"""
     try:
@@ -206,6 +261,22 @@ def save_prediction_results(file_path, prediction_type, prediction_results, actu
         print(f"Failed to save prediction results: {e}")
         return None
 
+def chart_times(values):
+    return [pd.Timestamp(value).isoformat() for value in values]
+
+def chart_times_et(values):
+    eastern = ZoneInfo("America/New_York")
+    times = []
+    for value in values:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        times.append(ts.tz_convert(eastern).strftime("%Y-%m-%d %H:%M"))
+    return times
+
+def chart_numbers(values):
+    return [float(value) for value in values]
+
 def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, historical_start_idx=0):
     """Create prediction chart"""
     # Use specified historical data start position, not always from the beginning of df
@@ -225,42 +296,56 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
     
     # Add historical data (candlestick chart)
     fig.add_trace(go.Candlestick(
-        x=historical_df['timestamps'] if 'timestamps' in historical_df.columns else historical_df.index,
-        open=historical_df['open'],
-        high=historical_df['high'],
-        low=historical_df['low'],
-        close=historical_df['close'],
+        x=chart_times_et(historical_df['timestamps']) if 'timestamps' in historical_df.columns else list(historical_df.index),
+        open=chart_numbers(historical_df['open']),
+        high=chart_numbers(historical_df['high']),
+        low=chart_numbers(historical_df['low']),
+        close=chart_numbers(historical_df['close']),
         name='Historical Data (400 data points)',
-        increasing_line_color='#26A69A',
-        decreasing_line_color='#EF5350'
+        increasing_line_color='#94A3B8',
+        decreasing_line_color='#64748B',
+        increasing_fillcolor='rgba(148, 163, 184, 0.35)',
+        decreasing_fillcolor='rgba(100, 116, 139, 0.35)',
+        opacity=0.45
     ))
     
     # Add prediction data (candlestick chart)
     if pred_df is not None and len(pred_df) > 0:
-        # Calculate prediction data timestamps - ensure continuity with historical data
-        if 'timestamps' in df.columns and len(historical_df) > 0:
-            # Start from the last timestamp of historical data, create prediction timestamps with the same time interval
-            last_timestamp = historical_df['timestamps'].iloc[-1]
-            time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0] if len(df) > 1 else pd.Timedelta(hours=1)
-            
-            pred_timestamps = pd.date_range(
-                start=last_timestamp + time_diff,
-                periods=len(pred_df),
-                freq=time_diff
-            )
-        else:
-            # If no timestamps, use index
-            pred_timestamps = range(len(historical_df), len(historical_df) + len(pred_df))
+        # Prefer the predictor's timestamp index. In latest-data mode this is the
+        # next regular US market-session schedule; in comparison mode it is the
+        # selected historical target window.
+        try:
+            pred_timestamps = pd.to_datetime(pred_df.index)
+        except Exception:
+            pred_timestamps = None
+
+        if pred_timestamps is None or len(pred_timestamps) != len(pred_df):
+            if 'timestamps' in df.columns and len(historical_df) > 0:
+                last_timestamp = historical_df['timestamps'].iloc[-1]
+                time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0] if len(df) > 1 else pd.Timedelta(hours=1)
+                pred_timestamps = make_us_market_timestamps(last_timestamp, len(pred_df), time_diff)
+            else:
+                pred_timestamps = range(len(historical_df), len(historical_df) + len(pred_df))
         
         fig.add_trace(go.Candlestick(
-            x=pred_timestamps,
-            open=pred_df['open'],
-            high=pred_df['high'],
-            low=pred_df['low'],
-            close=pred_df['close'],
-            name='Prediction Data (120 data points)',
-            increasing_line_color='#66BB6A',
-            decreasing_line_color='#FF7043'
+            x=chart_times_et(pred_timestamps),
+            open=chart_numbers(pred_df['open']),
+            high=chart_numbers(pred_df['high']),
+            low=chart_numbers(pred_df['low']),
+            close=chart_numbers(pred_df['close']),
+            name='Predicted candles',
+            increasing_line_color='#2563EB',
+            decreasing_line_color='#2563EB',
+            increasing_fillcolor='rgba(37, 99, 235, 0.16)',
+            decreasing_fillcolor='rgba(37, 99, 235, 0.16)',
+            opacity=0.7
+        ))
+        fig.add_trace(go.Scatter(
+            x=chart_times_et(pred_timestamps),
+            y=chart_numbers(pred_df['close']),
+            mode='lines',
+            name='Predicted close',
+            line={'color': '#1D4ED8', 'width': 3, 'dash': 'dash'}
         ))
     
     # Add actual data for comparison (if exists)
@@ -286,20 +371,30 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
             actual_timestamps = range(len(historical_df), len(historical_df) + len(actual_df))
         
         fig.add_trace(go.Candlestick(
-            x=actual_timestamps,
-            open=actual_df['open'],
-            high=actual_df['high'],
-            low=actual_df['low'],
-            close=actual_df['close'],
-            name='Actual Data (120 data points)',
-            increasing_line_color='#FF9800',
-            decreasing_line_color='#F44336'
+            x=chart_times_et(actual_timestamps),
+            open=chart_numbers(actual_df['open']),
+            high=chart_numbers(actual_df['high']),
+            low=chart_numbers(actual_df['low']),
+            close=chart_numbers(actual_df['close']),
+            name='Actual candles',
+            increasing_line_color='#F97316',
+            decreasing_line_color='#F97316',
+            increasing_fillcolor='rgba(249, 115, 22, 0.18)',
+            decreasing_fillcolor='rgba(249, 115, 22, 0.18)',
+            opacity=0.7
+        ))
+        fig.add_trace(go.Scatter(
+            x=chart_times_et(actual_timestamps),
+            y=chart_numbers(actual_df['close']),
+            mode='lines',
+            name='Actual close',
+            line={'color': '#EA580C', 'width': 3}
         ))
     
     # Update layout
     fig.update_layout(
-        title='Kronos Financial Prediction Results - 400 Historical Points + 120 Prediction Points vs 120 Actual Points',
-        xaxis_title='Time',
+        title='Kronos Forecast Comparison - blue dashed = predicted close, orange solid = actual close',
+        xaxis_title='US Eastern Time',
         yaxis_title='Price',
         template='plotly_white',
         height=600,
@@ -320,9 +415,9 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
         if all_timestamps:
             all_timestamps = sorted(all_timestamps)
             fig.update_xaxes(
-                range=[all_timestamps[0], all_timestamps[-1]],
+                range=[chart_times_et([all_timestamps[0]])[0], chart_times_et([all_timestamps[-1]])[0]],
                 rangeslider_visible=False,
-                type='date'
+                type='category'
             )
     
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
@@ -440,7 +535,7 @@ def predict():
                 
                 if start_date:
                     # Custom time period - fix logic: use data within selected window
-                    start_dt = pd.to_datetime(start_date)
+                    start_dt = normalize_start_datetime(start_date, df['timestamps'])
                     
                     # Find data after start time
                     mask = df['timestamps'] >= start_dt
@@ -464,11 +559,13 @@ def predict():
                     
                     prediction_type = f"Kronos model prediction (within selected window: first {lookback} data points for prediction, last {pred_len} data points for comparison, time span: {time_span})"
                 else:
-                    # Use latest data
-                    x_df = df.iloc[:lookback][required_cols]
-                    x_timestamp = df.iloc[:lookback]['timestamps']
-                    y_timestamp = df.iloc[lookback:lookback+pred_len]['timestamps']
-                    prediction_type = "Kronos model prediction (latest data)"
+                    # Use the latest completed candles and forecast forward from the
+                    # newest timestamp. This is the live-reference path.
+                    x_df = df.iloc[-lookback:][required_cols]
+                    x_timestamp = df.iloc[-lookback:]['timestamps']
+                    time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0] if len(df) > 1 else pd.Timedelta(hours=1)
+                    y_timestamp = make_us_market_timestamps(df['timestamps'].iloc[-1], pred_len, time_diff)
+                    prediction_type = "Kronos model prediction (latest completed data)"
                 
                 # Ensure timestamps are Series format, not DatetimeIndex, to avoid .dt attribute error in Kronos model
                 if isinstance(x_timestamp, pd.DatetimeIndex):
@@ -499,7 +596,7 @@ def predict():
             # Fix logic: use data within selected window
             # Prediction uses first 400 data points within selected window
             # Actual data should be last 120 data points within selected window
-            start_dt = pd.to_datetime(start_date)
+            start_dt = normalize_start_datetime(start_date, df['timestamps'])
             
             # Find data starting from start_date
             mask = df['timestamps'] >= start_dt
@@ -520,30 +617,20 @@ def predict():
                         'amount': float(row['amount']) if 'amount' in row else 0
                     })
         else:  # Latest data
-            # Prediction uses first 400 data points
-            # Actual data should be 120 data points after first 400 data points
-            if len(df) >= lookback + pred_len:
-                actual_df = df.iloc[lookback:lookback+pred_len]
-                for i, (_, row) in enumerate(actual_df.iterrows()):
-                    actual_data.append({
-                        'timestamp': row['timestamps'].isoformat(),
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': float(row['volume']) if 'volume' in row else 0,
-                        'amount': float(row['amount']) if 'amount' in row else 0
-                    })
+            # Latest-data mode forecasts beyond the newest candle, so actual future
+            # candles are not available yet. Historical comparison is handled by
+            # selecting a custom start_date window.
+            actual_df = None
         
         # Create chart - pass historical data start position
         if start_date:
             # Custom time period: find starting position of historical data in original df
-            start_dt = pd.to_datetime(start_date)
+            start_dt = normalize_start_datetime(start_date, df['timestamps'])
             mask = df['timestamps'] >= start_dt
             historical_start_idx = df[mask].index[0] if len(df[mask]) > 0 else 0
         else:
-            # Latest data: start from beginning
-            historical_start_idx = 0
+            # Latest data: show the most recent lookback window.
+            historical_start_idx = max(0, len(df) - lookback)
         
         chart_json = create_prediction_chart(df, pred_df, lookback, pred_len, actual_df, historical_start_idx)
         
@@ -551,7 +638,7 @@ def predict():
         if 'timestamps' in df.columns:
             if start_date:
                 # Custom time period: use selected window data to calculate timestamps
-                start_dt = pd.to_datetime(start_date)
+                start_dt = normalize_start_datetime(start_date, df['timestamps'])
                 mask = df['timestamps'] >= start_dt
                 time_range_df = df[mask]
                 
@@ -568,13 +655,8 @@ def predict():
                     future_timestamps = []
             else:
                 # Latest data: calculate from last time point of entire data file
-                last_timestamp = df['timestamps'].iloc[-1]
                 time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0]
-                future_timestamps = pd.date_range(
-                    start=last_timestamp + time_diff,
-                    periods=pred_len,
-                    freq=time_diff
-                )
+                future_timestamps = make_us_market_timestamps(df['timestamps'].iloc[-1], pred_len, time_diff)
         else:
             future_timestamps = range(len(df), len(df) + pred_len)
         
