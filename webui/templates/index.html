@@ -316,6 +316,39 @@
             font-size: 1.1rem;
         }
 
+        .trade-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .trade-card {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        .trade-card h4 {
+            color: #4a5568;
+            font-size: 0.85rem;
+            margin-bottom: 6px;
+        }
+
+        .trade-card .value {
+            color: #2d3748;
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+
+        .trade-notes {
+            margin-top: 15px;
+            color: #4a5568;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
         .comparison-info {
             background: white;
             border: 1px solid #e2e8f0;
@@ -579,6 +612,42 @@
             <div class="chart-container">
                 <h2>📈 Prediction Results Chart</h2>
                 <div id="chart"></div>
+
+                <div id="trade-overlay-section" class="comparison-section" style="display: none;">
+                    <h3>🎯 Entry / Exit Zone Overlay</h3>
+                    <div class="comparison-info">
+                        <p><strong>Bias:</strong> <span id="trade-bias">-</span></p>
+                        <p><strong>Confidence:</strong> <span id="trade-confidence">-</span></p>
+                        <p><strong>Error Buffer:</strong> <span id="trade-error-buffer">-</span></p>
+                    </div>
+                    <div class="trade-grid">
+                        <div class="trade-card">
+                            <h4>Current Close</h4>
+                            <div class="value" id="trade-current-close">-</div>
+                        </div>
+                        <div class="trade-card">
+                            <h4>Forecast Close</h4>
+                            <div class="value" id="trade-forecast-close">-</div>
+                        </div>
+                        <div class="trade-card">
+                            <h4>Entry Zone</h4>
+                            <div class="value" id="trade-entry-zone">-</div>
+                        </div>
+                        <div class="trade-card">
+                            <h4>Stop Zone</h4>
+                            <div class="value" id="trade-stop-zone">-</div>
+                        </div>
+                        <div class="trade-card">
+                            <h4>Target Zone</h4>
+                            <div class="value" id="trade-target-zone">-</div>
+                        </div>
+                        <div class="trade-card">
+                            <h4>Risk / Reward</h4>
+                            <div class="value" id="trade-risk-reward">-</div>
+                        </div>
+                    </div>
+                    <div class="trade-notes" id="trade-notes"></div>
+                </div>
                 
                 <!-- Comparison Analysis -->
                 <div id="comparison-section" class="comparison-section" style="display: none;">
@@ -1108,6 +1177,7 @@
             // Display chart
             const chartData = JSON.parse(result.chart);
             Plotly.newPlot('chart', chartData.data, chartData.layout);
+            displayTradeOverlay(result.trade_overlay);
             
             // Display comparison analysis (if actual data exists)
             if (result.has_comparison) {
@@ -1115,6 +1185,37 @@
             } else {
                 document.getElementById('comparison-section').style.display = 'none';
             }
+        }
+
+        function formatZone(zone) {
+            if (!zone) return 'Watch only';
+            if (zone.price !== undefined && zone.price !== null) return zone.price.toFixed(4);
+            if (zone.low !== undefined && zone.high !== undefined) {
+                return `${zone.low.toFixed(4)} - ${zone.high.toFixed(4)}`;
+            }
+            return '-';
+        }
+
+        function displayTradeOverlay(overlay) {
+            const section = document.getElementById('trade-overlay-section');
+            if (!overlay) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            document.getElementById('trade-bias').textContent = overlay.bias.toUpperCase();
+            document.getElementById('trade-confidence').textContent = overlay.confidence.toUpperCase();
+            document.getElementById('trade-error-buffer').textContent = `${overlay.error_buffer.toFixed(4)} (${overlay.error_source})`;
+            document.getElementById('trade-current-close').textContent = overlay.current_close.toFixed(4);
+            document.getElementById('trade-forecast-close').textContent = `${overlay.forecast_close.toFixed(4)} (${overlay.forecast_move_pct.toFixed(2)}%)`;
+            document.getElementById('trade-entry-zone').textContent = formatZone(overlay.entry_zone);
+            document.getElementById('trade-stop-zone').textContent = formatZone(overlay.stop_zone);
+            document.getElementById('trade-target-zone').textContent = formatZone(overlay.target_zone);
+            document.getElementById('trade-risk-reward').textContent = overlay.risk_reward === null ? '-' : `${overlay.risk_reward.toFixed(2)}R`;
+            document.getElementById('trade-notes').innerHTML = (overlay.notes || [])
+                .map(note => `<div>${note}</div>`)
+                .join('');
         }
 
         // Display comparison analysis

@@ -277,6 +277,128 @@ def chart_times_et(values):
 def chart_numbers(values):
     return [float(value) for value in values]
 
+def calculate_atr(df, window=14):
+    if df is None or len(df) < 2:
+        return 0.0
+
+    high = df['high'].astype(float)
+    low = df['low'].astype(float)
+    close = df['close'].astype(float)
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return float(true_range.tail(min(window, len(true_range))).mean())
+
+def calculate_close_mae(pred_df, actual_df):
+    if pred_df is None or actual_df is None or len(pred_df) == 0 or len(actual_df) == 0:
+        return None
+
+    length = min(len(pred_df), len(actual_df))
+    pred_close = pred_df['close'].iloc[:length].astype(float).to_numpy()
+    actual_close = actual_df['close'].iloc[:length].astype(float).to_numpy()
+    return float(np.mean(np.abs(pred_close - actual_close)))
+
+def round_price(value):
+    return None if value is None else round(float(value), 4)
+
+def compute_trade_overlay(input_df, pred_df, actual_df=None):
+    """Create conservative decision-support zones from the forecast path."""
+    if input_df is None or pred_df is None or len(input_df) == 0 or len(pred_df) == 0:
+        return None
+
+    current_close = float(input_df['close'].iloc[-1])
+    forecast_close = float(pred_df['close'].iloc[-1])
+    predicted_high = float(pred_df['high'].max())
+    predicted_low = float(pred_df['low'].min())
+    recent_window = input_df.tail(min(60, len(input_df)))
+    recent_support = float(recent_window['low'].min())
+    recent_resistance = float(recent_window['high'].max())
+    atr = calculate_atr(input_df)
+    if atr <= 0:
+        atr = max(current_close * 0.005, 0.01)
+
+    close_mae = calculate_close_mae(pred_df, actual_df)
+    error_buffer = close_mae if close_mae is not None else max(atr * 0.5, current_close * 0.0025)
+    forecast_move_pct = ((forecast_close - current_close) / current_close) * 100
+    threshold_pct = max((atr / current_close) * 25, 0.3)
+
+    if forecast_move_pct > threshold_pct:
+        bias = "bullish"
+    elif forecast_move_pct < -threshold_pct:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+
+    setup = {
+        'bias': bias,
+        'current_close': round_price(current_close),
+        'forecast_close': round_price(forecast_close),
+        'forecast_move_pct': round(forecast_move_pct, 2),
+        'predicted_high': round_price(predicted_high),
+        'predicted_low': round_price(predicted_low),
+        'recent_support': round_price(recent_support),
+        'recent_resistance': round_price(recent_resistance),
+        'atr': round_price(atr),
+        'error_buffer': round_price(error_buffer),
+        'error_source': 'comparison window close MAE' if close_mae is not None else 'estimated from recent volatility',
+        'entry_zone': None,
+        'stop_zone': None,
+        'target_zone': None,
+        'risk_reward': None,
+        'confidence': 'low',
+        'notes': []
+    }
+
+    if bias == "neutral":
+        setup['notes'].append("No clear directional edge from this forecast. Treat as a watch-only setup.")
+        return setup
+
+    if bias == "bullish":
+        entry_low = current_close - 0.75 * atr
+        entry_high = current_close + 0.25 * atr
+        stop = entry_low - atr
+        target_low = max(current_close, forecast_close - error_buffer)
+        target_high = predicted_high - error_buffer
+        entry_mid = (entry_low + entry_high) / 2
+        risk = entry_mid - stop
+        reward = target_low - entry_mid
+        if target_high <= entry_mid or reward <= 0 or risk <= 0:
+            setup['notes'].append("Forecast leans bullish, but the adjusted target does not justify a clean long zone.")
+        setup['entry_zone'] = {'low': round_price(entry_low), 'high': round_price(entry_high)}
+        setup['stop_zone'] = {'price': round_price(stop)}
+        setup['target_zone'] = {'low': round_price(target_low), 'high': round_price(max(target_low, target_high))}
+    else:
+        entry_low = current_close - 0.25 * atr
+        entry_high = current_close + 0.75 * atr
+        stop = entry_high + atr
+        target_low = predicted_low + error_buffer
+        target_high = min(current_close, forecast_close + error_buffer)
+        entry_mid = (entry_low + entry_high) / 2
+        risk = stop - entry_mid
+        reward = entry_mid - target_high
+        if target_low >= entry_mid or reward <= 0 or risk <= 0:
+            setup['notes'].append("Forecast leans bearish, but the adjusted target does not justify a clean short zone.")
+        setup['entry_zone'] = {'low': round_price(entry_low), 'high': round_price(entry_high)}
+        setup['stop_zone'] = {'price': round_price(stop)}
+        setup['target_zone'] = {'low': round_price(min(target_low, target_high)), 'high': round_price(target_high)}
+
+    if risk > 0:
+        rr = reward / risk
+        setup['risk_reward'] = round(float(rr), 2)
+        if rr >= 1.5 and abs(forecast_move_pct) >= threshold_pct * 2:
+            setup['confidence'] = 'medium'
+        if rr < 1:
+            setup['notes'].append("Risk/reward is below 1.0 after the error buffer.")
+
+    setup['notes'].append("Use these as zones for review, not automatic trade instructions.")
+    return setup
+
 def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, historical_start_idx=0):
     """Create prediction chart"""
     # Use specified historical data start position, not always from the beginning of df
@@ -671,6 +793,8 @@ def predict():
                 'volume': float(row['volume']) if 'volume' in row else 0,
                 'amount': float(row['amount']) if 'amount' in row else 0
             })
+
+        trade_overlay = compute_trade_overlay(x_df, pred_df, actual_df)
         
         # Save prediction results to file
         try:
@@ -698,6 +822,7 @@ def predict():
             'chart': chart_json,
             'prediction_results': prediction_results,
             'actual_data': actual_data,
+            'trade_overlay': trade_overlay,
             'has_comparison': len(actual_data) > 0,
             'message': f'Prediction completed, generated {pred_len} prediction points' + (f', including {len(actual_data)} actual data points for comparison' if len(actual_data) > 0 else '')
         })
